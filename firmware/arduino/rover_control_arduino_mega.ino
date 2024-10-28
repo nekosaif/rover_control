@@ -1,397 +1,352 @@
-/*
-Arduino : Monster 1
-IN_PIN 22, 23, 24, 25 : 4, 7, 8, 9
-PWM_PIN 2, 3 : 5, 6
-EN_PIN 34, 35 : 0, 1
+/**
+ * inverse_kineatics_with_calibration.ino
+ * 
+ * This Arduino sketch controls a robotic arm with two actuators and a rotating base.
+ * It provides functionality for calibration, movement control, and position memory using EEPROM.
+ * 
+ * Hardware Configuration:
+ * - 2 Linear actuators with potentiometer feedback
+ * - 1 Rotating base with potentiometer feedback
+ * - Calibration buttons
+ * - LED indicator for status
+ * 
+ * @author Original code modified and documented
+ * @version 2.0
+ */
 
-Arduino : Monster 2
-IN_PIN 26, 27, 28, 29 : 4, 7, 8, 9
-PWM_PIN 4, 5 : 5, 6
-EN_PIN 36, 37 : 0, 1
+#include <EEPROM.h>
 
-Arduino : Monster 3
-IN_PIN 30, 31, 32, 33 : 4, 7, 8, 9
-PWM_PIN 6, 7 : 5, 6
-EN_PIN 38, 39 : 0, 1
+// Pin Definitions
+struct PinConfig {
+  // Actuator 1 pins
+  static const uint8_t ACT1_UP = 3;
+  static const uint8_t ACT1_DOWN = 2;
+  static const uint8_t ACT1_POT = A3;
+  
+  // Actuator 2 pins
+  static const uint8_t ACT2_UP = 5;
+  static const uint8_t ACT2_DOWN = 4;
+  static const uint8_t ACT2_POT = A4;
+  
+  // Base rotation pins
+  static const uint8_t BASE_RIGHT = 6;
+  static const uint8_t BASE_LEFT = 7;
+  static const uint8_t BASE_POT = A5;
+  
+  // Control pins
+  static const uint8_t CALIBRATION = 8;
+  static const uint8_t BASE_CALIBRATION = 9;
+};
 
-Arduino : BTS 1
-EN_PIN 40, 41 : R_EN, L_EN
-PWM_PIN 8, 9 : R_PWM, L_PWM
+// EEPROM address mapping for potentiometer values
+struct EEPROMMap {
+  static const uint8_t ACT1_POT_MIN = 0;
+  static const uint8_t ACT1_POT_MAX = 1;
+  static const uint8_t ACT2_POT_MIN = 2;
+  static const uint8_t ACT2_POT_MAX = 3;
+  static const uint8_t BASE_POT_MIN = 4;
+  static const uint8_t BASE_POT_MAX = 5;
+};
 
-Arduino : BTS 2
-EN_PIN 42, 43 : R_EN, L_EN
-PWM_PIN 10, 11 : R_PWM, L_PWM
-*/
+// Configuration constants
+struct Config {
+  static const uint8_t EEPROM_START_ADDR = 0;
+  static const uint8_t CALIBRATION_BLINK_TIME = 3;
+  static const uint8_t STALL_TIME = 1;
+  static const uint8_t POT_OFFSET = 5;
+  static const uint8_t POT_TOLERANCE = 3;
+  
+  // Movement limits (in degrees)
+  static const uint8_t ACT1_MIN_ANGLE = 0;
+  static const uint8_t ACT1_MAX_ANGLE = 98;
+  static const uint8_t ACT2_MIN_ANGLE = 35;
+  static const uint8_t ACT2_MAX_ANGLE = 134;
+  static const uint8_t BASE_MIN_ANGLE = 0;
+  static const uint8_t BASE_MAX_ANGLE = 90;
+};
 
-#define BRAKEVCC 0
-#define CW 1
-#define CCW 2
-#define BRAKEGND 3
+// Global variables
+uint8_t potValues[6] = {255, 255, 255, 255, 255, 255}; // Initialize with invalid values
 
-#define MOTOR_A 0
-#define MOTOR_B 1
-#define MOTOR_C 2
-#define MOTOR_D 3
-#define MOTOR_E 4
-#define MOTOR_F 5
-
-#define WHEEL_A 0
-#define WHEEL_B 1
-
-
-byte readByte;
-
-
-const int inAPin[6] = {24, 25, 28, 29, 32, 33};
-const int inBPin[6] = {23, 22, 27, 26, 31, 30};
-
-const int pwmPin[6] = {2, 3, 4, 5, 6, 7};
-
-const int enPin[6] = {34, 35, 36, 37, 38, 39};
-
-
-const int enAPinWheel[2] = {40, 42};
-const int enBPinWheel[2] = {41, 43};
-
-const int pwmAPinWheel[2] = {8, 10};
-const int pwmBPinWheel[2] = {9, 11};
-
-
-const int START_DELAY = 300 / 255;
-const int STOP_DELAY = 300 / 255;
-
-
-int MAX_SPEED;
-
-
-bool isMovingForward = false;
-bool isMovingReverse = false;
-bool isMovingRight = false;
-bool isMovingLeft = false;
-
-
-void setup()
-{
-    Serial.begin(9600);
-
-    motorSetup();
-    wheelSetup();
-
-    MAX_SPEED = 150;
+/**
+ * Initial setup of the controller
+ */
+void setup() {
+  Serial.begin(9600);
+  setupPins();
+  
+  if (!performCalibrationCheck()) {
+    loadCalibrationFromEEPROM();
+  }
 }
 
-void loop()
-{
-    if (Serial.available() > 0)
-    {
-        readByte = Serial.read();
-        if (readByte == 'n')
-        {
-            arm_base(255, true);
-        }
-        else if (readByte == 'm')
-        {
-            arm_base(255, false);
-        }
-        else if (readByte == 'r')
-        {
-            arm_act1(255, true);
-        }
-        else if (readByte == 'f')
-        {
-            arm_act1(255, false);
-        }
-        else if (readByte == 't')
-        {
-            arm_act2(255, true);
-        }
-        else if (readByte == 'g')
-        {
-            arm_act2(255, false);
-        }
-        else if (readByte == 'y')
-        {
-            arm_act3(255, true);
-        }
-        else if (readByte == 'h')
-        {
-            arm_act3(255, false);
-        }
-        else if (readByte == 'v')
-        {
-            arm_wrist(255, true);
-        }
-        else if (readByte == 'b')
-        {
-            arm_wrist(255, false);
-        }
-        else if (readByte == 'o')
-        {
-            arm_claw(255, true);
-        }
-        else if (readByte == 'p')
-        {
-            arm_claw(255, false);
-        }
-        else if (readByte == 'w')
-        {
-            wheel_onward(255, true);
-        }
-        else if (readByte == 's')
-        {
-            wheel_onward(255, false);
-        }
-        else if (readByte == 'a')
-        {
-            wheel_steering(255, true);
-        }
-        else if (readByte == 'd')
-        {
-            wheel_steering(255, false);
-        }
-        else if (readByte == '1')
-        {
-            MAX_SPEED = 50;
-        }
-        else if (readByte == '2')
-        {
-            MAX_SPEED = 150;
-        }
-        else if (readByte == '3')
-        {
-            MAX_SPEED = 200;
-        }
-        else if (readByte == '4')
-        {
-            MAX_SPEED = 250;
-        }
-        else if (readByte == '-')
-        {
-            stop_all();
-        }
+/**
+ * Main program loop
+ */
+void loop() {
+  if (Serial.available() > 0) {
+    processSerialCommand();
+  }
+}
+
+/**
+ * Configure all input and output pins
+ */
+void setupPins() {
+  // Configure LED
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
+  
+  // Configure actuator pins
+  configurePinPair(PinConfig::ACT1_UP, PinConfig::ACT1_DOWN);
+  configurePinPair(PinConfig::ACT2_UP, PinConfig::ACT2_DOWN);
+  configurePinPair(PinConfig::BASE_RIGHT, PinConfig::BASE_LEFT);
+  
+  // Configure potentiometer inputs
+  pinMode(PinConfig::ACT1_POT, INPUT);
+  pinMode(PinConfig::ACT2_POT, INPUT);
+  pinMode(PinConfig::BASE_POT, INPUT);
+  
+  // Configure control inputs
+  pinMode(PinConfig::CALIBRATION, INPUT_PULLUP);
+  pinMode(PinConfig::BASE_CALIBRATION, INPUT_PULLUP);
+}
+
+/**
+ * Configure a pair of motor control pins
+ */
+void configurePinPair(uint8_t pinA, uint8_t pinB) {
+  pinMode(pinA, OUTPUT);
+  pinMode(pinB, OUTPUT);
+  digitalWrite(pinA, HIGH);
+  digitalWrite(pinB, HIGH);
+}
+
+/**
+ * Check if calibration is needed during startup
+ * @return true if calibration was performed, false otherwise
+ */
+bool performCalibrationCheck() {
+  for (int i = 0; i < Config::CALIBRATION_BLINK_TIME * 2; ++i) {
+    blinkLED(250);
+    
+    if (!digitalRead(PinConfig::CALIBRATION)) {
+      indicateCalibrationStart();
+      performCalibration();
+      return true;
     }
-    Serial.flush();
+  }
+  return false;
 }
 
-void motorSetup()
-{
-    for (int i = 0; i < 6; i++)
-    {
-        pinMode(inAPin[i], OUTPUT);
-        pinMode(inBPin[i], OUTPUT);
-        pinMode(pwmPin[i], OUTPUT);
-        pinMode(enPin[i], OUTPUT);
+/**
+ * Load calibration values from EEPROM
+ */
+void loadCalibrationFromEEPROM() {
+  for (int i = 0; i < 6; ++i) {
+    potValues[i] = EEPROM.read(Config::EEPROM_START_ADDR + i);
+    Serial.println(potValues[i]);
+  }
+}
 
-        digitalWrite(inAPin[i], LOW);
-        digitalWrite(inBPin[i], LOW);
-        digitalWrite(enPin[i], LOW);
+/**
+ * Save calibration values to EEPROM
+ */
+void saveCalibrationToEEPROM() {
+  for (int i = 0; i < 6; ++i) {
+    EEPROM.update(Config::EEPROM_START_ADDR + i, potValues[i]);
+  }
+}
+
+/**
+ * Process incoming serial commands
+ * Format: [actuator_number][position_value]
+ */
+void processSerialCommand() {
+  String command = Serial.readString();
+  int actuator = command.substring(0, 1).toInt();
+  int position = command.substring(1).toInt();
+  moveToPosition(actuator, position);
+}
+
+/**
+ * Move specified actuator to target position
+ * @param actuator Actuator number (1-3)
+ * @param targetPosition Target position in degrees
+ */
+void moveToPosition(uint8_t actuator, int targetPosition) {
+  struct ActuatorPins {
+    uint8_t up;
+    uint8_t down;
+    uint8_t pot;
+  } pins;
+  
+  int mappedTarget = getMappedPosition(actuator, targetPosition, pins);
+  
+  while (true) {
+    int currentPosition = map(analogRead(pins.pot), 0, 1023, 0, 255);
+    
+    if (abs(currentPosition - mappedTarget) <= Config::POT_OFFSET) {
+      digitalWrite(pins.up, HIGH);
+      digitalWrite(pins.down, HIGH);
+      break;
     }
-}
-
-void wheelSetup()
-{
-    for (int i = 0; i < 2; i++)
-    {
-        pinMode(enAPinWheel[i], OUTPUT);
-        pinMode(enBPinWheel[i], OUTPUT);
-        pinMode(pwmAPinWheel[i], OUTPUT);
-        pinMode(pwmBPinWheel[i], OUTPUT);
-
-        analogWrite(pwmAPinWheel[i], 0);
-        analogWrite(pwmBPinWheel[i], 0);
-
-        digitalWrite(enAPinWheel[i], LOW);
-        digitalWrite(enBPinWheel[i], LOW);
+    
+    // Pulse the appropriate direction
+    if (currentPosition < mappedTarget - Config::POT_OFFSET) {
+      pulsePin(pins.down, 100);
+    } else if (currentPosition > mappedTarget + Config::POT_OFFSET) {
+      pulsePin(pins.up, 100);
     }
+  }
 }
 
-void motorGo(uint8_t motor, uint8_t mode, uint8_t speed)
-{
-
-    digitalWrite(enPin[motor], HIGH);
-    switch (mode)
-    {
-    case BRAKEVCC: // Brake to VCC
-        digitalWrite(inAPin[motor], HIGH);
-        digitalWrite(inBPin[motor], HIGH);
-        break;
-    case CW: // Turn Clockwise
-        digitalWrite(inAPin[motor], HIGH);
-        digitalWrite(inBPin[motor], LOW);
-        break;
-    case CCW: // Turn Counter-Clockwise
-        digitalWrite(inAPin[motor], LOW);
-        digitalWrite(inBPin[motor], HIGH);
-        break;
-    case BRAKEGND: // Brake to GND
-        digitalWrite(inAPin[motor], LOW);
-        digitalWrite(inBPin[motor], LOW);
-        break;
-
+/**
+ * Get mapped position and pin configuration for specified actuator
+ */
+int getMappedPosition(uint8_t actuator, int position, struct ActuatorPins& pins) {
+  switch (actuator) {
+    case 1:
+      pins = {PinConfig::ACT1_UP, PinConfig::ACT1_DOWN, PinConfig::ACT1_POT};
+      return map(position, Config::ACT1_MIN_ANGLE, Config::ACT1_MAX_ANGLE, 
+                potValues[EEPROMMap::ACT1_POT_MAX], potValues[EEPROMMap::ACT1_POT_MIN]);
+    
+    case 2:
+      pins = {PinConfig::ACT2_DOWN, PinConfig::ACT2_UP, PinConfig::ACT2_POT};
+      return map(position, Config::ACT2_MIN_ANGLE, Config::ACT2_MAX_ANGLE,
+                potValues[EEPROMMap::ACT2_POT_MIN], potValues[EEPROMMap::ACT2_POT_MAX]);
+    
+    case 3:
+      pins = {PinConfig::BASE_RIGHT, PinConfig::BASE_LEFT, PinConfig::BASE_POT};
+      return map(position, Config::BASE_MIN_ANGLE, Config::BASE_MAX_ANGLE,
+                potValues[EEPROMMap::BASE_POT_MIN], potValues[EEPROMMap::BASE_POT_MAX]);
+    
     default:
+      return -1;
+  }
+}
+
+/**
+ * Perform full calibration sequence
+ */
+void performCalibration() {
+  Serial.println("Starting calibration sequence...");
+  
+  // Calibrate actuators
+  calibrateActuator2Max();
+  delay(1000);
+  calibrateActuator1Max();
+  delay(1000);
+  calibrateActuator1Min();
+  delay(1000);
+  calibrateActuator2Min();
+  delay(1000);
+  
+  indicateActuatorCalibrationComplete();
+  
+  // Wait for safety confirmation
+  while (digitalRead(PinConfig::CALIBRATION)) {
+    delay(100);
+  }
+  
+  // Calibrate base
+  calibrateBaseMin();
+  delay(1000);
+  calibrateBaseMax();
+  delay(1000);
+  
+  // Save and complete
+  saveCalibrationToEEPROM();
+  Serial.println("Calibration complete");
+  
+  // Log calibration values
+  for (int i = 0; i < 6; ++i) {
+    Serial.print(potValues[i]);
+    Serial.print(" ");
+  }
+  Serial.println();
+}
+
+/**
+ * Calibration helper functions
+ */
+void calibrateActuator1Min() {
+  calibrateEndpoint(PinConfig::ACT1_POT, PinConfig::ACT1_UP, PinConfig::ACT1_DOWN,
+                   EEPROMMap::ACT1_POT_MIN, "ACT1 MIN");
+}
+
+void calibrateActuator1Max() {
+  calibrateEndpoint(PinConfig::ACT1_POT, PinConfig::ACT1_DOWN, PinConfig::ACT1_UP,
+                   EEPROMMap::ACT1_POT_MAX, "ACT1 MAX");
+}
+
+void calibrateActuator2Min() {
+  calibrateEndpoint(PinConfig::ACT2_POT, PinConfig::ACT2_DOWN, PinConfig::ACT2_UP,
+                   EEPROMMap::ACT2_POT_MIN, "ACT2 MIN");
+}
+
+void calibrateActuator2Max() {
+  calibrateEndpoint(PinConfig::ACT2_POT, PinConfig::ACT2_UP, PinConfig::ACT2_DOWN,
+                   EEPROMMap::ACT2_POT_MAX, "ACT2 MAX");
+}
+
+/**
+ * Generic endpoint calibration function
+ */
+void calibrateEndpoint(uint8_t potPin, uint8_t movePin, uint8_t oppositePin,
+                      uint8_t storageIndex, const char* calibrationName) {
+  Serial.print("Calibrating ");
+  Serial.println(calibrationName);
+  
+  int potValue = map(analogRead(potPin), 0, 1023, 0, 255);
+  unsigned long updateTime = millis();
+  
+  digitalWrite(movePin, LOW);
+  
+  while (true) {
+    if (millis() > updateTime + Config::STALL_TIME * 1000 || 
+        !digitalRead(PinConfig::CALIBRATION)) {
+      
+      if (abs(potValue - map(analogRead(potPin), 0, 1023, 0, 255)) < Config::POT_TOLERANCE) {
+        digitalWrite(movePin, HIGH);
+        digitalWrite(oppositePin, HIGH);
+        potValues[storageIndex] = potValue;
         return;
+      }
     }
-    analogWrite(pwmPin[motor], speed);
-    return;
-}
-
-void wheelGo(uint8_t wheel, uint8_t mode, uint8_t speed)
-{
-    digitalWrite(enAPinWheel[wheel], HIGH);
-    digitalWrite(enBPinWheel[wheel], HIGH);
-    switch (mode)
-    {
-    case CW:
-        analogWrite(pwmAPinWheel[wheel], speed);
-        analogWrite(pwmBPinWheel[wheel], 0);
-        break;
-    case CCW:
-        analogWrite(pwmAPinWheel[wheel], 0);
-        analogWrite(pwmBPinWheel[wheel], speed);
-        break;
-
-    default:
-        return;
+    
+    int newValue = map(analogRead(potPin), 0, 1023, 0, 255);
+    if (potValue != newValue) {
+      updateTime = millis();
+      potValue = newValue;
     }
-    return;
+  }
 }
 
-void motorOff(uint8_t motor)
-{
-    digitalWrite(inAPin[motor], LOW);
-    digitalWrite(inBPin[motor], LOW);
-    analogWrite(pwmPin[motor], 0);
-    digitalWrite(enPin[motor], LOW);
+/**
+ * Utility functions
+ */
+void blinkLED(int duration) {
+  digitalWrite(LED_BUILTIN, HIGH);
+  delay(duration);
+  digitalWrite(LED_BUILTIN, LOW);
+  delay(duration);
 }
 
-void wheelOff(uint8_t wheel)
-{
-    digitalWrite(enAPinWheel[wheel], LOW);
-    digitalWrite(enBPinWheel[wheel], LOW);
-    analogWrite(pwmAPinWheel[wheel], 0);
-    analogWrite(pwmBPinWheel[wheel], 0);
+void pulsePin(uint8_t pin, int duration) {
+  digitalWrite(pin, LOW);
+  delay(duration);
+  digitalWrite(pin, HIGH);
 }
 
-void arm_base(int pwmSpeed, bool isForward)
-{
-    motorGo(MOTOR_A, isForward ? CW : CCW, pwmSpeed);
+void indicateCalibrationStart() {
+  for (int i = 0; i < 20; ++i) {
+    blinkLED(50);
+  }
 }
 
-void arm_act1(int pwmSpeed, bool isForward)
-{
-    motorGo(MOTOR_B, isForward ? CW : CCW, pwmSpeed);
-}
-
-void arm_act2(int pwmSpeed, bool isForward)
-{
-    motorGo(MOTOR_C, isForward ? CW : CCW, pwmSpeed);
-}
-
-void arm_act3(int pwmSpeed, bool isForward)
-{
-    motorGo(MOTOR_D, isForward ? CW : CCW, pwmSpeed);
-}
-
-void arm_wrist(int pwmSpeed, bool isForward)
-{
-    motorGo(MOTOR_E, isForward ? CW : CCW, pwmSpeed);
-}
-
-void arm_claw(int pwmSpeed, bool isForward)
-{
-    motorGo(MOTOR_F, isForward ? CW : CCW, pwmSpeed);
-}
-
-void wheel_onward(int pwmSpeed, bool isForward)
-{
-    if (!isMovingForward && !isMovingReverse)
-    {
-        for (int i = 1; i < MAX_SPEED; ++i) 
-        {
-            wheelGo(WHEEL_A, isForward ? CW : CCW, i);
-            wheelGo(WHEEL_B, isForward ? CW : CCW, i);
-            delay(START_DELAY);
-        }
-        if (isForward)
-        {
-            isMovingForward = true;
-        }
-        else
-        {
-          isMovingReverse = true;
-        }
-    }
-}
-
-void wheel_steering(int pwmSpeed, bool isRight)
-{
-    if (!isMovingRight && !isMovingLeft)
-    {
-        for (int i = 1; i < MAX_SPEED; ++i) 
-        {
-            wheelGo(WHEEL_A, isRight ? CW : CCW, i);
-            wheelGo(WHEEL_B, isRight ? CCW : CW, i);
-            delay(START_DELAY);
-        }
-        if (isRight)
-        {
-            isMovingRight = true;
-        }
-        else
-        {
-          isMovingLeft = true;
-        }
-    }
-}
-
-void stop_all()
-{
-    if (isMovingForward)
-    {
-        for (int i = MAX_SPEED; i > 1; --i) 
-        {
-            wheelGo(WHEEL_A, isMovingForward ? CW : CCW, i);
-            wheelGo(WHEEL_B, isMovingForward ? CW : CCW, i);
-            delay(STOP_DELAY);
-        }
-        isMovingForward = false;
-    }
-    if (isMovingReverse)
-    {
-        for (int i = MAX_SPEED; i > 1; --i) 
-        {
-            wheelGo(WHEEL_A, isMovingForward ? CW : CCW, i);
-            wheelGo(WHEEL_B, isMovingForward ? CW : CCW, i);
-            delay(STOP_DELAY);
-        }
-        isMovingReverse = false;
-    }
-    if (isMovingRight)
-    {
-        for (int i = MAX_SPEED; i > 1; --i) 
-        {
-            wheelGo(WHEEL_A, isMovingRight ? CW : CCW, i);
-            wheelGo(WHEEL_B, isMovingRight ? CCW : CW, i);
-            delay(STOP_DELAY);
-        }
-        isMovingRight = false;
-    }
-    if (isMovingLeft)
-    {
-        for (int i = MAX_SPEED; i > 1; --i) 
-        {
-            wheelGo(WHEEL_A, isMovingRight ? CW : CCW, i);
-            wheelGo(WHEEL_B, isMovingRight ? CCW : CW, i);
-            delay(STOP_DELAY);
-        }
-        isMovingLeft = false;
-    }
-    motorOff(MOTOR_A);
-    motorOff(MOTOR_B);
-    motorOff(MOTOR_C);
-    motorOff(MOTOR_D);
-    motorOff(MOTOR_E);
-    motorOff(MOTOR_F);
-    wheelOff(WHEEL_A);
-    wheelOff(WHEEL_B);
+void indicateActuatorCalibrationComplete() {
+  for (int i = 0; i < 5; ++i) {
+    blinkLED(500);
+  }
 }
